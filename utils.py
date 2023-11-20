@@ -1,6 +1,8 @@
 # %%
 
+from itertools import product
 import numpy as np
+import plotly
 from sklearn import datasets
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
@@ -57,7 +59,8 @@ def train_test_split_anomaly(X, is_normal,
                              test_normal_size=0.4,
                              train_anomaly_size=0.0,
                              print_report=False,
-                             random_state=None,):
+                             random_state=None,
+                             ):
     """
     Split the dataset into train and test sets, with the test set containing
     a mix of normal and anomaly data points.
@@ -94,6 +97,7 @@ def train_test_split_anomaly(X, is_normal,
     n_train_anomaly = int(n_train_anomaly)
     n_train = n_train_normal + n_train_anomaly
     n_test_anomaly = n_anomaly - n_train_anomaly
+    # n_test_anomaly = n_test_normal
     n_test = n_test_normal + n_test_anomaly
 
     if print_report:
@@ -118,7 +122,7 @@ def train_test_split_anomaly(X, is_normal,
         X_anomaly_train = np.empty((0, *X.shape[1:]))
         X_anomaly_test = X_anomaly
     else:
-        X_anomaly_train, X_anomaly_test = train_test_split(X_anomaly, train_size=n_train_anomaly, random_state=random_state)
+        X_anomaly_train, X_anomaly_test = train_test_split(X_anomaly, train_size=n_train_anomaly, test_size=n_test_anomaly, random_state=random_state)
 
     # Combine the normal and anomaly training sets
     X_train = np.concatenate([X_normal_train, X_anomaly_train])
@@ -147,12 +151,42 @@ def train_test_split_anomaly(X, is_normal,
     return X_train, X_test, y_train, y_test
 
 
-def plot_confusion_3d(matrix, param, param_name: str = None, **plot_kwargs):
+def plot_confusion(y_true, y_pred, **kwargs):
+    """
+    Plot a confusion matrix for the given true and predicted labels.
+
+    Params:
+        y_true: the true labels
+        y_pred: the predicted labels
+        kwargs: passed to Figure.update_layout
+    """
+    cm = confusion_matrix(y_true, y_pred)
+    cm_norm = cm / cm.sum(axis=1, keepdims=True)
+
+
+    text = [[
+        f"{value:.0%}<br>({n=:.0f})"
+          for n, value in row
+        ] for row in np.stack([cm, cm_norm], axis=2)
+    ]
+    fig = ff.create_annotated_heatmap(
+        z=cm_norm,
+        x=["Predicted anomaly", "Predicted normal"],
+        y=["Actual anomaly", "Actual normal"],
+        annotation_text=text,
+    )
+    kwargs.setdefault("title", "Confusion matrix")
+    fig.update_layout(**kwargs)
+    fig.show()
+
+def plot_confusion_3d(matrix, x, x_title: str = None,
+                      lines: list[str] = None,
+                      **plot_kwargs):
     """
     Plot the evolution of the confusion matrix over a parameter.
 
     Params:
-        matrix: a 3d array of shape (n, 2, 2) where n is the number of values of the parameter.
+        matrix: a 3d array of shape (lines?, n, 2, 2) where n is the number of values of the parameter.
             The confusion matrix should be normalized with respect to the true labels (normalise="true").
         param: the values of the parameter, of shape (n,)
         param_name: the name of the parameter, used in the axis labels
@@ -162,18 +196,38 @@ def plot_confusion_3d(matrix, param, param_name: str = None, **plot_kwargs):
         "False anomaly", "True normal"
     ]
 
+    if lines is None:
+        lines = ["trace"]
+        assert len(matrix.shape) == 3
+        matrix = matrix[np.newaxis, ...]
+
+    assert matrix.shape == (len(lines), len(x), 2, 2)
+
     # Make a 2x2 plot, for each metric
     fig = make_subplots(rows=2, cols=2, subplot_titles=names)
 
-    for i, name in enumerate(names):
-        fig.add_trace(go.Scatter(
-            x=param,
-            y=matrix[:, i // 2, i % 2] * 100,
-            mode="lines",
-            name=name,
-        ), row=i // 2 + 1, col=i % 2 + 1)
+    if len(lines) > 1:
+        colors = plotly.colors.DEFAULT_PLOTLY_COLORS.copy()
+    else:
+        colors = [None]
 
-    fig.update_xaxes(title_text=param_name, row=2)
+    for plot_idx, name in enumerate(names):
+        row = plot_idx // 2
+        col = plot_idx % 2
+        for l, line in enumerate(lines):
+            scatter = go.Scatter(
+                x=x,
+                y=matrix[l, :, row, col] * 100,
+                mode="lines",
+                name=line,
+                legendgroup=f"group{l}",
+                showlegend=plot_idx == 0 and len(lines) > 1,
+                line=dict(color=colors[l % len(colors)]),
+            )
+            fig.add_trace(scatter, row=row + 1, col=col + 1)
+
+    if x_title is not None:
+        fig.update_xaxes(title_text=x_title, row=2)
     fig.update_yaxes(title_text="Percentage", col=1)
     fig.update_layout(**plot_kwargs)
 
@@ -181,6 +235,47 @@ def plot_confusion_3d(matrix, param, param_name: str = None, **plot_kwargs):
     # fig.update_yaxes(range=[0, 100])
 
     # Remove the names of the traces from the legend
-    fig.update_layout(showlegend=False)
+    # fig.update_layout(showlegend=False)
 
     fig.show()
+
+
+def collect_y_preds(X_train, X_test, **kwargs_lists: list):
+    """
+    Train a OSVM model for each combination of argument in kwargs_lists,
+    and return the predictions in a multidimensional array.
+
+    Params:
+        X_train: the training set
+        X_test: the testing set
+        kwargs_lists: each other keyword argument is a list of values to try and is passed to the OSVM constructor.
+    Returns:
+        y_preds: a multidimensional array of shape (len(kwargs_lists[0]), len(kwargs_lists[1]), ..., len(X_test))
+    """
+
+    keys = list(kwargs_lists.keys())
+    values = list(kwargs_lists.values())
+    all_combinations = product(*values)
+    y_preds = []
+    for combination in all_combinations:
+        kwargs = dict(zip(keys, combination))
+        osvm = OneClassSVM(**kwargs)
+        osvm.fit(X_train)
+        y_pred = osvm.predict(X_test)
+        y_preds.append(y_pred)
+    # turn the list of y_preds into a an array, and reshape it according to kwargs_lists
+    shape = [len(values) for values in values]
+    y_preds = np.array(y_preds).reshape(*shape, -1)
+    return y_preds
+
+
+# Some tests
+if __name__ == "__main__":
+    x = y = np.random.rand(100, 64)
+    preds = collect_y_preds(x, y, nu=[0.1, 0.2, 0.3], kernel=["linear", "rbf"])
+    assert preds.shape[:-1] == (3, 2)
+
+
+
+if __name__ == "__main__":
+    print("Tests passed!")

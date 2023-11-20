@@ -7,7 +7,6 @@ from sklearn.metrics import f1_score, classification_report, confusion_matrix
 
 import plotly.graph_objects as go
 import plotly.express as px
-import plotly.figure_factory as ff
 
 from utils import *
 
@@ -32,10 +31,16 @@ X_train, X_test, y_train, y_test = train_test_split_anomaly(
     print_report=True,
 )
 
+show(X_train, y_train, title="Some digits from the training set")
+show(X_test, y_test, title="Some digits from the testing set")
+
 # %% Normalize the features based on mean and std of train set.
 scaler = StandardScaler()
 X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
+
+show(X_train_scaled, y_train, title="Some digits from the training set (normalized)")
+show(X_test_scaled, y_test, title="Some digits from the testing set (normalized)")
 
 # %%
 
@@ -47,17 +52,7 @@ osvm.fit(X_train_scaled)
 y_pred = osvm.predict(X_test_scaled)
 
 print(classification_report(y_test, y_pred))
-
-# Show confusion matrix
-cm = confusion_matrix(y_test, y_pred)
-fig = ff.create_annotated_heatmap(
-    z=cm,
-    x=["Predicted anomaly", "Predicted normal"],
-    y=["Actual anomaly", "Actual normal"],
-    colorscale="Viridis"
-)
-fig.update_layout(title="Confusion matrix")
-fig.show()
+plot_confusion(y_test, y_pred)
 
 
 # %% Show some of the predictions
@@ -87,7 +82,7 @@ cms = np.array(cms)
 f1s = np.array(f1s)
 
 # Plot the confusion matrices
-plot_confusion_3d(cms, nus, param_name="nu",
+plot_confusion_3d(cms, nus, x_title="nu",
         title="Confusion matrix for different nu values in OSVM"
                     f'<br><span style="font-size: 14px">Normal digit {NORMAL_CLASS}; train anomaly size: {TRAIN_ANOMALY_SIZE:.0%}</span>')
 
@@ -98,6 +93,49 @@ fig.update_layout(title="F1 score for different nu values in OSVM"
 fig.update_xaxes(title_text="nu")
 fig.update_yaxes(title_text="F1 score")
 fig.show()
+
+
+
+
+# %% Show confusion for different kernels and nu
+nus = np.linspace(0.025, 0.8, 20)
+kernels = ["linear", "poly", "rbf", "sigmoid"]
+
+# Calculate the confusion matrix for each kernel
+preds = collect_y_preds(X_train_scaled, X_test_scaled, kernel=kernels, nu=nus)
+cms = np.apply_along_axis(
+    lambda y_preds: confusion_matrix(y_test, y_preds, normalize="true"),
+    axis=-1, arr=preds
+)
+f1s = np.apply_along_axis(
+    lambda y_preds: f1_score(y_test, y_preds),
+    axis=-1, arr=preds
+)
+
+# Plot the confusion matrices
+plot_confusion_3d(cms, nus, x_title="nu", lines=kernels,
+        title="Confusion matrix for different kernels in OSVM"
+                    f'<br><span style="font-size: 14px">{NORMAL_CLASS=}; {TRAIN_ANOMALY_SIZE=:.0%}</span>')
+
+# Plot the f1 score
+fig = go.Figure()
+for kernel, f1 in zip(kernels, f1s):
+    fig.add_trace(go.Scatter(
+        x=nus,
+        y=f1,
+        mode="lines",
+        name=f"{kernel}"
+    ))
+fig.update_layout(title="F1 score for different kernels in OSVM"
+                  f'<br><span style="font-size: 14px">{NORMAL_CLASS=}; {TRAIN_ANOMALY_SIZE=:.0%}</span>')
+fig.update_xaxes(title_text="nu")
+fig.update_yaxes(title_text="F1 score")
+fig.show()
+
+print("""Warning: the f1 score is very sensitive to class imbalance.
+Currently the test dataset is not balanced at all.
+https://en.wikipedia.org/wiki/F-score#Dependence_of_the_F-score_on_class_imbalance""")
+
 
 
 
