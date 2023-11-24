@@ -58,6 +58,7 @@ def show(images, *titles, rows=3, cols=4, format: str=None, **kwargs):
 def train_test_split_anomaly(X, is_normal,
                              test_normal_size=0.4,
                              train_anomaly_size=0.0,
+                             balanced_test_set=True,
                              print_report=False,
                              random_state=None,
                              ):
@@ -70,6 +71,7 @@ def train_test_split_anomaly(X, is_normal,
         is_normal: a boolean array indicating which data points are normal
         test_normal_size: the proportion of normal data points to put in the test set
         train_anomaly_size: the proportion of anomaly data points to put in the training set, relative to the size of the training set
+        balanced_test_set: whether to make the test set contain the same number of normal and anomaly data points
         print_report: whether to print a report of the sizes of dataset split
         random_state: passed to train_test_split
 
@@ -96,8 +98,10 @@ def train_test_split_anomaly(X, is_normal,
     n_train_anomaly = train_anomaly_size * n_train_normal / (1 - train_anomaly_size)
     n_train_anomaly = int(n_train_anomaly)
     n_train = n_train_normal + n_train_anomaly
-    n_test_anomaly = n_anomaly - n_train_anomaly
-    # n_test_anomaly = n_test_normal
+    if balanced_test_set:
+        n_test_anomaly = n_test_normal
+    else:
+        n_test_anomaly = n_anomaly - n_train_anomaly
     n_test = n_test_normal + n_test_anomaly
 
     if print_report:
@@ -271,8 +275,8 @@ def collect_y_preds(X_train, X_test, **kwargs_lists: list):
 
 # Some tests
 if __name__ == "__main__":
-    x = y = np.random.rand(100, 64)
-    preds = collect_y_preds(x, y, nu=[0.1, 0.2, 0.3], kernel=["linear", "rbf"])
+    r = np.random.rand(100, 64)
+    preds = collect_y_preds(r, r, nu=[0.1, 0.2, 0.3], kernel=["linear", "rbf"])
     assert preds.shape[:-1] == (3, 2)
 
 

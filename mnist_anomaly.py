@@ -1,9 +1,8 @@
 # %% All the imports
-import numpy as np
 from sklearn import datasets
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import OneClassSVM
-from sklearn.metrics import f1_score, classification_report, confusion_matrix
+from sklearn.metrics import f1_score, classification_report, confusion_matrix, precision_recall_curve
 
 import plotly.graph_objects as go
 import plotly.express as px
@@ -12,6 +11,8 @@ from utils import *
 
 # %% Load the a simple dataset consisting of 8x8 images of digits
 X, y = datasets.load_digits(return_X_y=True)
+# X, y = datasets.load_iris(return_X_y=True)
+# X, y = datasets.load_wine(return_X_y=True)
 
 # Show what the dataset looks like
 show(X, y, title="Some digits")
@@ -26,7 +27,9 @@ is_normal = (y == NORMAL_CLASS)
 
 X_train, X_test, y_train, y_test = train_test_split_anomaly(
     X, is_normal,
-    test_normal_size=0.1, train_anomaly_size=TRAIN_ANOMALY_SIZE,
+    test_normal_size=0.2,
+    train_anomaly_size=TRAIN_ANOMALY_SIZE,
+    balanced_test_set=True,
     random_state=42,
     print_report=True,
 )
@@ -98,7 +101,7 @@ fig.show()
 
 
 # %% Show confusion for different kernels and nu
-nus = np.linspace(0.025, 0.8, 20)
+nus = np.linspace(0.025, 0.9, 20)
 kernels = ["linear", "poly", "rbf", "sigmoid"]
 
 # Calculate the confusion matrix for each kernel
@@ -132,9 +135,68 @@ fig.update_xaxes(title_text="nu")
 fig.update_yaxes(title_text="F1 score")
 fig.show()
 
-print("""Warning: the f1 score is very sensitive to class imbalance.
-Currently the test dataset is not balanced at all.
-https://en.wikipedia.org/wiki/F-score#Dependence_of_the_F-score_on_class_imbalance""")
+"""Note: the f1 score is very sensitive to class imbalance.
+In practice we see two different plots when test set is balanced or not.
+Probably worth talking about it.
+https://en.wikipedia.org/wiki/F-score#Dependence_of_the_F-score_on_class_imbalance"""
+
+
+# %%
+# Plot precision-recall curve
+# cm: (kernel, nu, class, pred)
+
+# Calculate the precision and recall for each kernel
+true_positives = cms[..., 1, 1]
+false_positives = cms[..., 0, 1]
+false_negatives = cms[..., 1, 0]
+
+precisions = true_positives / (true_positives + false_positives)
+recalls = true_positives / (true_positives + false_negatives)
+
+fig = go.Figure()
+for kernel, precision, recall in zip(kernels, precisions, recalls):
+    fig.add_trace(go.Scatter(
+        x=recall,
+        y=precision,
+        mode="lines",
+        name=f"{kernel}"
+    ))
+fig.update_layout(title="Precision-recall curve for different kernels in OSVM"
+                    f'<br><span style="font-size: 14px">{NORMAL_CLASS=}; {TRAIN_ANOMALY_SIZE=:.0%}</span>')
+fig.update_xaxes(title_text="Recall")
+fig.update_yaxes(title_text="Precision")
+fig.show()
+
+print("Note: this is not really a precision-recall curve, "
+      "since the nu parameter is not the decision threshold. ")
+
+
+# %% A precission-recall curve for a given nu&kernel
+
+nu = 0.1
+kernel = "linear"
+# kernel = "poly"
+degree = 3
+# kernel = "rbf"
+
+osvm = OneClassSVM(nu=nu, kernel=kernel, degree=degree)
+osvm.fit(X_train_scaled)
+y_pred = osvm.score_samples(X_test_scaled)
+
+precision, recall, _ = precision_recall_curve(y_test, y_pred)
+
+fig = go.Figure()
+fig.add_trace(go.Scatter(
+    x=recall,
+    y=precision,
+    mode="lines",
+    name=f"{kernel}"
+))
+fig.update_layout(title="Precision-recall curve for different kernels in OSVM"
+                    f'<br><span style="font-size: 14px">{NORMAL_CLASS=}; {TRAIN_ANOMALY_SIZE=:.0%}</span>')
+fig.update_xaxes(title_text="Recall")
+fig.update_yaxes(title_text="Precision")
+fig.show()
 
 
 
