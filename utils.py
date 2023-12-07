@@ -19,7 +19,8 @@ from rich.table import Table
 from rich.console import Console
 
 
-def show(images, *titles, rows=3, cols=4, format: str=None, **kwargs):
+def show(images, *titles, rows=3, cols=4, format: str=None,
+         zmin:float=None, zmax:float=None, **kwargs):
     """
     Show a grid of images with titles.
 
@@ -43,7 +44,8 @@ def show(images, *titles, rows=3, cols=4, format: str=None, **kwargs):
         else:
             titles = [" ".join(map(str, t)) for t in zip(*titles)]
 
-    fig = px.imshow(images.reshape(-1, 8, 8), facet_col=0, facet_col_wrap=cols)
+    fig = px.imshow(images.reshape(-1, 8, 8), facet_col=0, facet_col_wrap=cols,
+                    zmin=zmin, zmax=zmax)
     # Add titles
     for i, title in enumerate(titles):
         r = i // cols
