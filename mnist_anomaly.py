@@ -1,5 +1,6 @@
 # %% All the imports
 from dataclasses import dataclass
+from turtle import color
 from sklearn import datasets
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import OneClassSVM
@@ -11,6 +12,11 @@ import plotly.express as px
 
 from utils import *
 
+FOR_SLIDES = dict(
+    margin=dict(l=0, r=0, b=0, t=0),
+    height=400, width=400,
+    font=dict(size=15),
+)
 # %% Load the a simple dataset consisting of 8x8 images of digits
 X, y = datasets.load_digits(return_X_y=True)
 # X, y = datasets.load_iris(return_X_y=True)
@@ -142,11 +148,6 @@ fig.add_trace(go.Scatter(
 ))
 # fig.update_layout(title="ROC curve for MLP with 6 hidden units, normal digits 0 and 1")
 # Rmove margins
-FOR_SLIDES = dict(
-    margin=dict(l=0, r=0, b=0, t=0),
-    height=400, width=400,
-    font=dict(size=15),
-)
 fig.update_layout(**FOR_SLIDES)
 if ROC:
     fig.update_xaxes(title_text="False positive rate")
@@ -235,6 +236,9 @@ else:
 
 
 # %% Datasets
+import datasets as hf_datasets
+
+TRAIN_ANOMALY_SIZE = 0.00
 
 @dataclass
 class Dataset:
@@ -246,12 +250,13 @@ class Dataset:
 
 def all_datasets(
     test_normal_size=0.2,
-    train_anomaly_size=0,
+    train_anomaly_size=TRAIN_ANOMALY_SIZE,
     balanced_test_set=False,
     random_state=42,
     max_size=5_000,
 ):
     def mk_dataset(name, X, normal):
+        print(name, "features:", X.shape[1])
         return Dataset(
             name,
             *train_test_split_anomaly(
@@ -271,17 +276,31 @@ def all_datasets(
     yield mk_dataset("Digits 0 and 1", digits_X, digits_y < 2)
 
     # Credit card fraud dataset
-    creditcard_X, creditcard_y = datasets.fetch_openml(
-        data_id=42175, return_X_y=True, as_frame=False
-    )
-    creditcard_y = creditcard_y.astype(int)
-    yield mk_dataset("Credit card fraud", creditcard_X, creditcard_y == 0)
+    # creditcard_X, creditcard_y = datasets.fetch_openml(
+    #     data_id=42175, return_X_y=True, as_frame=False
+    # )
+    # creditcard_y = creditcard_y.astype(int)
+    # yield mk_dataset("Credit card fraud", creditcard_X, creditcard_y == 0)
 
     # NSL-KDD dataset
-    nslkdd_X, nslkdd_y = datasets.fetch_openml(
-        data_id=42193, return_X_y=True, as_frame=False
-    )
-    nslkdd_y = nslkdd_y.astype(int)
+    nslkdd = hf_datasets.load_dataset("Mireu-Lab/NSL-KDD", split="train")
+    nslkdd.set_format(type="numpy")
+    X = np.empty((len(nslkdd), 0), dtype=float)
+    for name, v in nslkdd.features.items():
+        if name == "class":
+            y = nslkdd[name] == "normal"
+        elif v.dtype.startswith("int") or v.dtype.startswith("float"):
+            X = np.concatenate([X, nslkdd[name][:, None]], axis=1)
+        elif v.dtype == "string":
+            # Map the vocabulary to binary values
+            feature: np.ndarray = nslkdd[name]
+            vocab = np.unique(feature)
+            new_features = feature[:, None] == vocab
+            X = np.concatenate([X, new_features], axis=1)
+        else:
+            raise Exception(f"Unknown dtype: {v.dtype}")
+    nslkdd_X = X
+    nslkdd_y = y.astype(int)
     yield mk_dataset("NSL-KDD", nslkdd_X, nslkdd_y == 0)
 
     # Cifar10 dataset
@@ -311,16 +330,31 @@ for dataset in all_datasets:
         clf.fit(dataset.X_train, dataset.X_train)
         results.append((dataset.name, name, clf))
 
+# %% Save the results
+import pickle
+with open(f"results_anomaly_{TRAIN_ANOMALY_SIZE*100:.0}.pkl", "wb") as f:
+    pickle.dump(results, f)
+
+# %% Load the results
+import pickle
+with open(f"results_anomaly_{TRAIN_ANOMALY_SIZE*100:.0f}.pkl", "rb") as f:
+    results = pickle.load(f)
+
+
 # %% Test all the classifiers on all the datasets, computing the best threshold for each,
 # using both F1 and sufficient recall of 90% as metrics.
 
-target_recall = 0.9
+target_recall = 0.99
+target_positive = target_recall - TRAIN_ANOMALY_SIZE
 test_results = []
 
 for dataset_name, name, clf in results:
     print(f"Testing {name} on {dataset_name}")
 
-    dataset = next(d for d in all_datasets if d.name == dataset_name)
+    try:
+        dataset = next(d for d in all_datasets if d.name == dataset_name)
+    except StopIteration:
+        continue
 
     if isinstance(clf, MLPRegressor):
         X_test_through_clf = clf.predict(dataset.X_test)
@@ -340,12 +374,16 @@ for dataset_name, name, clf in results:
     best_threshold = thres[np.argmax(f1)]
     # print(best_threshold, f1)
 
-    # compute threshold for 90% recall
-    min_threshold = thres[np.argmin(rec >= (target_recall))]
+    # compute threshold for 0.99 - TRAIN_ANOMALY_SIZE positive rate
+    sorted_probas = np.sort(probas)
+    min_threshold = sorted_probas[-int(target_positive * len(sorted_probas))]
+
+    # min_threshold = thres[np.argmin(rec >= (target_recall))]
     # print(min_threshold)
 
     # compute f1 score in both cases
     y_pred = (probas >= best_threshold).astype(int)
+    # print(dataset.y_test, y_pred)
     f1 = f1_score(-dataset.y_test, y_pred * 2 - 1)
     y_pred = (probas >= min_threshold).astype(int)
     f1_90 = f1_score(-dataset.y_test, y_pred * 2 - 1)
@@ -353,75 +391,114 @@ for dataset_name, name, clf in results:
     # results.append((dataset.name, name, f1, f1_90, clf))
     test_results.append((dataset.name, name, f1, f1_90))
 
-# %% Save the results
-import pickle
-with open("results.pkl", "wb") as f:
-    pickle.dump(results, f)
-
-# %% Load the results
-import pickle
-with open("results.pkl", "rb") as f:
-    results = pickle.load(f)
 
 # %% Plot the results
 # x: which dataset
 # y: f1_90 / f1 for each classifier
 # color: classifier
-
-RELATIVE_F1 = 0
-
 from collections import defaultdict
+
+
 
 
 per_classifier = defaultdict(lambda: ([], [], []))
 for dataset_name, classifier_name, f1, f1_90 in test_results:
-    if "Credit" in dataset_name:
-        continue
+    # if "Credit" in dataset_name:
+        # continue
     if dataset_name == "Cifar10 (automobile)":
         dataset_name = "Cifar10 (auto)"
     if dataset_name == "Cifar10 (automobile and airplane)":
         dataset_name = "Cifar10 (auto&plane)"
     classifier_name = classifier_name.replace("MLP ", "NN ")
-
+    classifier_name = classifier_name.replace("SVM", "OSVM")
 
     per_classifier[classifier_name][0].append(dataset_name)
     per_classifier[classifier_name][1].append(f1)
     per_classifier[classifier_name][2].append(f1_90)
 
+fig = make_subplots(cols=2, rows=1)
 
-fig = go.Figure()
-for classifier_name, (dataset_names, f1s, f1s_90) in per_classifier.items():
-    f1s = np.array(f1s)
-    f1s_90 = np.array(f1s_90)
-    if classifier_name.startswith("NN"):
-        legendgroup = "NN"
-        marker = "cross"
-    else:
-        legendgroup = "SVM"
-        marker = "x"
+for RELATIVE_F1 in (True, False):
+    col = 1 if RELATIVE_F1 else 2
 
-    fig.add_trace(go.Scatter(
-        x=dataset_names,
-        y=f1s_90 / f1s if RELATIVE_F1 else f1s_90,
-        # Use % for the y axis
-        mode="markers",
-        name=classifier_name,
-        legendgroup=legendgroup,
-        marker=dict(symbol=marker, size=10, opacity=0.8),
-    ))
-# fig.update_layout(title=f"F1 score for {target_recall:.0%} recall / F1 score")
-# fig.update_xaxes(title_text="Dataset")
-fig.update_yaxes(title_text="F1 / Best possible F1" if RELATIVE_F1 else f"F1 score for {target_recall:.0%} recall",
-                 tickformat=".0%" if RELATIVE_F1 else ".2f")
-kwargs = FOR_SLIDES.copy()
-kwargs["width"] = 600
-fig.update_layout(**kwargs)
+    for i, (classifier_name, (dataset_names, f1s, f1s_90)) in enumerate(per_classifier.items()):
+        f1s = np.array(f1s)
+        f1s_90 = np.array(f1s_90)
+        if classifier_name.startswith("NN"):
+            legendgroup = "NN"
+            marker = "cross"
+        else:
+            legendgroup = "SVM"
+            marker = "x"
+
+        fig.add_trace(go.Scatter(
+            # x=dataset_names,
+            # jitter
+            x=np.arange(len(dataset_names)) , #+ np.random.uniform(-0.1, 0.1, len(dataset_names)),
+            y=f1s_90 / f1s if RELATIVE_F1 else f1s_90,
+
+            # Use % for the y axis
+            mode="markers",
+            name=classifier_name,
+            legendgroup=legendgroup,
+            showlegend=RELATIVE_F1,
+            marker=dict(symbol=marker, size=10, opacity=0.8,
+                        color=plotly.colors.qualitative.Plotly[i % len(plotly.colors.qualitative.Plotly)]),
+        ), col=col, row=1)
+
+        # Set color based on i
+    # fig.update_layout(title=f"F1 score for {target_positive:.0%} recall / F1 score")
+    # fig.update_xaxes(title_text="Dataset")
+    fig.update_yaxes(title_text="F1 / Best possible F1" if RELATIVE_F1 else f"F1 score for {target_positive:.0%} positive rate",
+                    tickformat=".1%" if RELATIVE_F1 else ".2f", col=col,)
+    fig.update_xaxes(tickangle=45, col=col,
+                     # Pass the names
+                        ticktext=dataset_names,
+                        tickvals=np.arange(len(dataset_names)),
+                        )
+
+
+    # Hide the legend for the second plot
+    kwargs = FOR_SLIDES.copy()
+    kwargs["width"] = 1000
+    fig.update_layout(**kwargs)
+
 fig.show()
+fig.write_image(f"images/big-plot-both-anomaly-{TRAIN_ANOMALY_SIZE*100}.png", scale=3)
 
-if RELATIVE_F1:
-    fig.write_image("images/big-plot.png", scale=3)
-else:
-    fig.write_image("images/big-plot-f1s.png", scale=3)
+# %%
+
+    if RELATIVE_F1:
+        fig.write_image("images/big-plot.png", scale=3)
+    else:
+        fig.write_image("images/big-plot-f1s.png", scale=3)
+
+
+# %% Load NSL-KDD dataset
+
+import datasets as hf_datasets
+
+nslkdd = hf_datasets.load_dataset("Mireu-Lab/NSL-KDD", split="train")
+nslkdd.set_format(type="numpy")
+
+# X is everything except the class
+# %%
+X = np.empty((len(nslkdd), 0))
+for i, (name, v) in enumerate(nslkdd.features.items()):
+    if name == "class":
+        y = nslkdd[name] == "normal"
+    elif v.dtype.startswith("int") or v.dtype.startswith("float"):
+        X = np.concatenate([X, nslkdd[name][:, None]], axis=1)
+    elif v.dtype == "string":
+        # Map the vocabulary to binary values
+        feature: np.ndarray = nslkdd[name]
+        vocab = np.unique(feature)
+        new_features = feature[:, None] == vocab
+        X = np.concatenate([X, new_features], axis=1)
+    else:
+        raise Exception(f"Unknown dtype: {v.dtype}")
+
+print(X.shape)
 
 
 # %%
